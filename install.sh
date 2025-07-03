@@ -1,50 +1,50 @@
 #!/bin/bash
-# L2TP/IPsec VPN Auto Installer (Silent Mode)
-# Author: Merciless (原始脚本)
-# Modified: yaoyao686 版本，全自动部署无交互
+# Auto L2TP/IPsec VPN install script with fixed config
+# Author: yaoyao686
 
-# 固定变量
-iprange="192.168.18"
-mypsk="yaoyao686"
-username="yaoyao686"
-password="yaoyao686"
+VPN_IP_RANGE="192.168.18"
+VPN_USER="yaoyao686"
+VPN_PASS="yaoyao686"
+VPN_PSK="yaoyao686"
 
-# 检查 root 权限
-[[ $EUID -ne 0 ]] && echo "请使用 root 权限运行该脚本！" && exit 1
+# 1. 转换格式（如果你已经在本地改过可以忽略）
+# sed -i 's/\r$//' "$0"
 
-# 检查 TUN 模块
-[[ ! -e /dev/net/tun ]] && echo "TUN 模块未开启，VPN 无法使用。" && exit 1
+# 2. 安装依赖
+yum -y install epel-release
+yum -y install ppp xl2tpd libreswan firewalld
 
-# 设置变量
-IP=$(wget -qO- -t1 -T2 ipv4.icanhazip.com)
-yum install -y epel-release
-yum install -y xl2tpd libreswan ppp iptables-services firewalld
+# 3. 启动并开机自启 firewalld
+systemctl enable --now firewalld
 
-# 创建配置文件
+# 4. 开启内核转发
+echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
+sysctl -p
+
+# 5. 写配置文件
 cat > /etc/ipsec.conf <<EOF
 config setup
-    protostack=netkey
-    uniqueids=no
-    nat_traversal=yes
+  protostack=netkey
+  uniqueids=no
+  nat_traversal=yes
 
 conn L2TP-PSK
-    auto=add
-    left=%defaultroute
-    leftid=${IP}
-    right=%any
-    type=transport
-    authby=secret
-    pfs=no
-    ike=aes128-sha1;modp1024
-    phase2alg=aes128-sha1
-    keyingtries=3
-    rekey=no
-    leftprotoport=17/1701
-    rightprotoport=17/%any
+  authby=secret
+  pfs=no
+  auto=add
+  keyingtries=3
+  rekey=no
+  ikelifetime=8h
+  keylife=1h
+  type=transport
+  left=%defaultroute
+  leftprotoport=17/1701
+  right=%any
+  rightprotoport=17/1701
 EOF
 
 cat > /etc/ipsec.secrets <<EOF
-%any %any : PSK "${mypsk}"
+%any  %any  : PSK "${VPN_PSK}"
 EOF
 
 cat > /etc/xl2tpd/xl2tpd.conf <<EOF
@@ -52,8 +52,8 @@ cat > /etc/xl2tpd/xl2tpd.conf <<EOF
 ipsec saref = yes
 
 [lns default]
-ip range = ${iprange}.10-${iprange}.254
-local ip = ${iprange}.1
+ip range = ${VPN_IP_RANGE}.10-${VPN_IP_RANGE}.254
+local ip = ${VPN_IP_RANGE}.1
 require chap = yes
 refuse pap = yes
 require authentication = yes
@@ -79,13 +79,10 @@ lcp-echo-failure 4
 EOF
 
 cat > /etc/ppp/chap-secrets <<EOF
-${username} l2tpd ${password} *
+${VPN_USER} l2tpd ${VPN_PASS} *
 EOF
 
-# 系统转发与防火墙规则
-echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
-sysctl -p
-
+# 6. 防火墙规则
 firewall-cmd --permanent --add-service=ipsec
 firewall-cmd --permanent --add-port=1701/udp
 firewall-cmd --permanent --add-port=4500/udp
@@ -93,23 +90,27 @@ firewall-cmd --permanent --add-port=500/udp
 firewall-cmd --permanent --add-masquerade
 firewall-cmd --reload
 
-iptables -t nat -A POSTROUTING -s ${iprange}.0/24 -o eth0 -j MASQUERADE
+iptables -t nat -A POSTROUTING -s ${VPN_IP_RANGE}.0/24 -o eth0 -j MASQUERADE
 
-# 启动服务
-systemctl enable ipsec
-systemctl enable xl2tpd
-systemctl restart ipsec
-systemctl restart xl2tpd
+# 7. 启动服务
+systemctl enable --now ipsec
+systemctl enable --now xl2tpd
 
-# 输出信息
+# 8. 输出结果
 clear
-echo "✅ L2TP/IPsec VPN 安装完成"
-echo "-------------------------------"
-echo "服务器 IP：${IP}"
-echo "预共享密钥：${mypsk}"
-echo "VPN 用户名：${username}"
-echo "VPN 密码：${password}"
-echo "本地地址：${iprange}.1"
-echo "客户端分配：${iprange}.10-${iprange}.254"
-echo "-------------------------------"
-echo "连接类型：L2TP/IPSec PSK"
+IP=$(wget -qO- ipv4.icanhazip.com)
+cat <<EOL
+
+✅ L2TP/IPsec VPN 安装完成
+
+服务器 IP：${IP}
+预共享密钥：${VPN_PSK}
+VPN 用户名：${VPN_USER}
+VPN 密码：${VPN_PASS}
+
+本地地址：${VPN_IP_RANGE}.1
+客户端分配：${VPN_IP_RANGE}.10-${VPN_IP_RANGE}.254
+
+连接类型：L2TP/IPSec PSK
+
+EOL
